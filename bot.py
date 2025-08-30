@@ -396,55 +396,83 @@ async def pending_month_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(c, parse_mode=ParseMode.HTML)
 
 
-async def send_pending_last7days(context: ContextTypes.DEFAULT_TYPE):
-    admin_chat_ids = _get_admin_ids()
-    if not admin_chat_ids:
+async def send_pending_last2months(context: ContextTypes.DEFAULT_TYPE):
+    # ambil target (DM, grup biasa, atau topic forum)
+    raw_targets = _get_targets()
+    if not raw_targets:
         return
+    # de-dup biar tidak kirim dua kali ke target yang sama
+    seen = set()
+    targets: list[tuple[int, int | None]] = []
+    for t in raw_targets:
+        if t not in seen:
+            seen.add(t)
+            targets.append(t)
 
-    end = date.today()
-    start = end - timedelta(days=6)
+    today = date.today()
+    # awal dua bulan lalu (kalender)
+    y, m = today.year, today.month
+    if m > 1:
+        start_y, start_m = y, m - 1
+    else:
+        start_y, start_m = y - 1, m + 10
+    start = date(start_y, start_m, 1)
+    end = today
 
-    # Ambil data
+    # ambil data (non-blocking)
     try:
         results = await asyncio.to_thread(list_pending_in_range, start, end, 5000)
     except Exception as e:
-        for chat_id in admin_chat_ids:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=(f"<b>Ringkasan Pending – 7 Hari Terakhir</b>\n"
-                      f"Rentang: <code>{start}</code> – <code>{end}</code>\n"
-                      f"Gagal membaca data: <code>{escape(str(e))}</code>"),
-                parse_mode=ParseMode.HTML
-            )
+        err = (
+            f"<b>Ringkasan Pending – 2 Bulan Terakhir</b>\n"
+            f"Rentang: <code>{start}</code> – <code>{end}</code>\n"
+            f"Gagal membaca data: <code>{escape(str(e))}</code>"
+        )
+        for chat_id, thread_id in targets:
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=err,
+                    parse_mode=ParseMode.HTML,
+                    message_thread_id=thread_id
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(0.25)
         return
 
-    # Header ringkas
     header_msg = (
-        f"<b>Ringkasan Pending – 7 Hari Terakhir</b>\n"
+        f"<b>Ringkasan Pending – 2 Bulan Terakhir</b>\n"
         f"Rentang: <code>{start}</code> – <code>{end}</code>\n"
         f"Total: <b>{len(results)}</b>"
     )
 
-    for chat_id in admin_chat_ids:
+    # kirim header ke semua target (hormati topic/thread)
+    for chat_id, thread_id in targets:
         try:
-            await context.bot.send_message(chat_id=chat_id, text=header_msg, parse_mode=ParseMode.HTML)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=header_msg,
+                parse_mode=ParseMode.HTML,
+                message_thread_id=thread_id
+            )
         except Exception as e:
-            print(f"[WARN] gagal kirim header ke {chat_id}: {e}")
+            print(f"[WARN] gagal kirim header ke {chat_id} (thread={thread_id}): {e}")
         await asyncio.sleep(0.25)
 
     if not results:
         return
 
-    # Dedup hasil (ORDER_ID, NO_SC)
-    seen, dedup = set(), []
+    # dedup data
+    seen_keys, dedup = set(), []
     for r in results:
-        key = (r.get("ORDER_ID",""), r.get("NO_SC",""))
-        if key in seen: 
+        key = (r.get("ORDER_ID", ""), r.get("NO_SC", ""))
+        if key in seen_keys:
             continue
-        seen.add(key)
+        seen_keys.add(key)
         dedup.append(r)
 
-    # Kirim detail seperti sebelumnya
+    # pecah agar aman dari limit Telegram
     buf, chunks = "", []
     for i, d in enumerate(dedup, 1):
         line = _format_item(i, d, "")
@@ -455,13 +483,20 @@ async def send_pending_last7days(context: ContextTypes.DEFAULT_TYPE):
     if buf:
         chunks.append(buf)
 
+    # kirim detail ke semua target
     for c in chunks:
-        for chat_id in admin_chat_ids:
+        for chat_id, thread_id in targets:
             try:
-                await context.bot.send_message(chat_id=chat_id, text=c, parse_mode=ParseMode.HTML)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=c,
+                    parse_mode=ParseMode.HTML,
+                    message_thread_id=thread_id
+                )
             except Exception as e:
-                print(f"[WARN] gagal kirim detail ke {chat_id}: {e}")
+                print(f"[WARN] gagal kirim detail ke {chat_id} (thread={thread_id}): {e}")
             await asyncio.sleep(0.35)
+
 
 
 
@@ -557,6 +592,87 @@ async def summary_branch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
+def _get_targets() -> list[tuple[int, int | None]]:
+    """
+    Baca target dari ENV:
+      ADMIN_TARGETS (direkomendasikan), fallback ke ADMIN_CHAT_IDS.
+    Format:
+      -1001234567890           -> kirim ke chat (tanpa topic)
+      -1001234567890:12345     -> kirim ke topic id 12345 di chat tsb
+    Pisahkan dengan koma atau baris baru.
+    """
+    raw = os.getenv("ADMIN_TARGETS", "") or os.getenv("ADMIN_CHAT_IDS", "")
+    targets: list[tuple[int, int | None]] = []
+    for part in raw.replace("\n", ",").split(","):
+        s = part.strip()
+        if not s:
+            continue
+        if ":" in s:
+            a, b = s.split(":", 1)
+            try:
+                targets.append((int(a.strip()), int(b.strip())))
+            except ValueError:
+                pass
+        else:
+            try:
+                targets.append((int(s), None))
+            except ValueError:
+                pass
+    return targets
+
+
+async def whereami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    msg  = update.effective_message
+    await update.message.reply_text(
+        f"<b>Chat ID:</b> <code>{chat.id}</code>\n"
+        f"<b>Topic ID (message_thread_id):</b> <code>{getattr(msg, 'message_thread_id', None)}</code>",
+        parse_mode=ParseMode.HTML
+    )
+
+async def debug_targets(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    items = _get_targets()
+    if not items:
+        return await update.message.reply_text(
+            "Tidak ada target. Cek ENV ADMIN_TARGETS / ADMIN_CHAT_IDS.",
+            parse_mode=ParseMode.HTML
+        )
+    lines = [f"{i+1}. chat_id={cid}, thread_id={tid}" for i, (cid, tid) in enumerate(items)]
+    await update.message.reply_text("<b>Targets:</b>\n" + "\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def sendtopic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /sendtopic <chat_id> <thread_id> <teks...>
+    Contoh:
+      /sendtopic -1002719604219 5 Halo dari bot
+    """
+    if len(context.args) < 3:
+        return await update.message.reply_text(
+            "Format: /sendtopic <chat_id> <thread_id> <teks...>",
+            parse_mode=ParseMode.HTML
+        )
+    try:
+        chat_id = int(context.args[0])
+        thread_id = int(context.args[1])
+    except ValueError:
+        return await update.message.reply_text("chat_id / thread_id harus angka.", parse_mode=ParseMode.HTML)
+    text = " ".join(context.args[2:])
+    try:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"TEST TOPIC ✅\n{escape(text)}",
+            parse_mode=ParseMode.HTML,
+            message_thread_id=thread_id
+        )
+        await update.message.reply_text("Terkirim ✔️", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        await update.message.reply_text(
+            f"Gagal kirim: <code>{escape(str(e))}</code>", parse_mode=ParseMode.HTML
+        )
+
+
+
 import logging
 logging.basicConfig(level=logging.INFO)
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -572,17 +688,23 @@ def main():
     app.add_handler(CommandHandler("pendingdate", pending_date_cmd))
     app.add_handler(CommandHandler("pendingmonth", pending_month_cmd))
     app.add_handler(CommandHandler("summarybranch", summary_branch_cmd))
+    # di main():
+    app.add_handler(CommandHandler("whereami", whereami))
     app.add_error_handler(on_error)
+    # di main():
+    app.add_handler(CommandHandler("debugtargets", debug_targets))
+    # di main():
+    app.add_handler(CommandHandler("sendtopic", sendtopic))
 
     jakarta = ZoneInfo("Asia/Jakarta")
     app.job_queue.run_daily(
-        send_pending_last7days,
+        send_pending_last2months,
         time=dtime(hour=10, minute=15, tzinfo=jakarta),
-        name="daily_pending_last7days",
+        name="daily_pending_last2months",
     )
 
-    # tes sekali 5 detik setelah start (hapus kalau sudah tidak perlu)
-    app.job_queue.run_once(send_pending_last7days, when=20)
+    # tes sekali setelah start
+    app.job_queue.run_once(send_pending_last2months, when=20)
 
     app.run_polling()
 
