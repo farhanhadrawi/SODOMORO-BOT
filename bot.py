@@ -28,11 +28,26 @@ def _format_item(i: int, d: dict, query: str) -> str:
     status_do = escape(d.get("STATUS_DO",""))
     jenis = escape(d.get("JENIS_ORDER",""))
     tgl = escape(d.get("ORDER_DATE",""))
+    last_upd_raw = d.get("LAST_UPDATED_DATE","")
+
+    # hitung Age & Stale (kalender hari)
+    od = _parse_date_str(d.get("ORDER_DATE",""))
+    lu = _parse_date_str(last_upd_raw)
+    today = _today_id()
+    age = _days_between(od, today)         # ORDER_DATE -> today
+    stale = _days_between(lu or od, today) # LAST_UPDATED_DATE -> today; fallback ke ORDER_DATE
+
+    # tampilkan raw last updated jika ada
+    last_upd = escape(last_upd_raw) if last_upd_raw else "-"
+
     return (
         f"<b>{i}. {name}</b>\n"
-        f"  <b>ORDER_ID:</b> <code>{order_id}</code> | <b>No SC:</b> <code>{no_sc}</code>\n"
-        f"  <b>Status DO:</b> {status_do} | <b>Jenis Order:</b> {jenis} | <b>Tgl:</b> {tgl}"
+        f"      <b>ORDER_ID:</b> <code>{order_id}</code> | <b>No SC:</b> <code>{no_sc}</code>\n"
+        f"      <b>Status DO:</b> {status_do} | <b>Jenis Order:</b> {jenis}\n"
+        f"      <b>Tgl Order:</b> {tgl} | <b>Last Updated:</b> {last_upd}\n"
+        f"      <b>Umur Order:</b> {age} | <b>Lama Tidak Update:</b> {stale}"
     )
+
 
 def _get_admin_ids() -> list[int]:
     raw = os.getenv("ADMIN_CHAT_IDS", "")  # nama variabel ENV pakai huruf besar
@@ -47,6 +62,30 @@ def _get_admin_ids() -> list[int]:
         except ValueError:
             pass
     return ids
+
+def _parse_date_str(s: str) -> date | None:
+    if not s:
+        return None
+    try:
+        from dateutil import parser as dateparser
+        # asumsikan input bisa "YYYY-MM-DD", "DD/MM/YYYY", dll.
+        return dateparser.parse(str(s), dayfirst=True, fuzzy=True).date()
+    except Exception:
+        return None
+
+def _days_between(a: date | None, b: date | None) -> str:
+    """Return selisih hari sebagai string 'Xd' atau '-' jika tidak valid."""
+    if not a or not b:
+        return "-"
+    try:
+        d = (b - a).days
+        return f"{d}d" if d >= 0 else "-"
+    except Exception:
+        return "-"
+
+def _today_id() -> date:
+    # supaya konsisten zona waktu Indonesia
+    return datetime.now(ZoneInfo("Asia/Jakarta")).date()
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -64,10 +103,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /pending\n"
         "   ➝ Lihat daftar order pending (Status ≠ Complete/Cancel).\n"
         "   Contoh:\n"
-        "   <code>/pending jambi</code> → filter by DATEL\n"
-        "   <code>/pending 2025-08</code> → filter bulan\n"
-        "   <code>/pending 2025-08-01 2025-08-15</code> → filter rentang tanggal\n"
-        "   <code>/pending jambi 2025-08</code> → kombinasi filter DATEL + bulan\n\n"
+        "   <b>/pending 01-07-2025 15-08-2025</b> → filter rentang tanggal (DD-MM-YYYY)\n"
+        "   <b>/pending 01-07-2025</b> → filter dari tanggal (DD-MM-YYYY) - hari ini \n"
+        "   <b>/pending 2025-08</b> → filter bulan (YYYY-MM)\n"
+        "   <b>/pending JAMBI 2025-08</b> → branch + bulan (YYYY-MM)\n"
+        "   <b>/pending SUNGAI PENUH 01-07-2025</b> → branch + tanggal (DD-MM-YYYY)\n"
         "• /summarybranch [DATEL] [YYYY-MM]\n"
         "   ➝ Ringkasan per status & jenis order.\n"
         "   Contoh: <code>/summarybranch JAMBI 2025-08</code>\n\n"
@@ -162,10 +202,11 @@ async def pending_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         help_text = (
             "Cara menggunakan <b>/pending</b>:\n"
-            "• <code>/pending JAMBI</code> → filter by DATEL/Branch\n"
-            "• <code>/pending 2025-08</code> → filter bulan (YYYY-MM)\n"
-            "• <code>/pending 2025-08-01 2025-08-15</code> → filter rentang tanggal\n"
-            "• <code>/pending SUNGAI PENUH 2025-08</code> → branch + bulan\n"
+            "<b>/pending 01-07-2025 15-08-2025</b> → filter rentang tanggal (DD-MM-YYYY)\n"
+            "<b>/pending 01-07-2025</b> → filter dari tanggal (DD-MM-YYYY) - hari ini \n"
+            "<b>/pending 2025-08</b> → filter bulan (YYYY-MM)\n"
+            "<b>/pending JAMBI 2025-08</b> → branch + bulan (YYYY-MM)\n"
+            "<b>/pending SUNGAI PENUH 01-07-2025</b> → branch + tanggal (DD-MM-YYYY)\n"
         )
         await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
         return

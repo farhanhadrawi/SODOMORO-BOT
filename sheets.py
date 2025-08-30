@@ -218,6 +218,7 @@ def list_not_done(keyword: str | None = None, limit: int = 2000):
             "STATUS_DO": status,
             "JENIS_ORDER": r[idx_jenis] if len(r) > idx_jenis else "",
             "ORDER_DATE": r[idx_date] if len(r) > idx_date else "",
+            "LAST_UPDATED_DATE": r[header.get("last_updated_date", -1)] if "last_updated_date" in header else "",
         })
         if len(out) >= limit:
             break
@@ -268,6 +269,7 @@ def list_pending_in_range(start: date | None, end: date | None, limit: int = 200
             "STATUS_DO": status,
             "JENIS_ORDER": r[idx_jenis] if len(r) > idx_jenis else "",
             "ORDER_DATE": r[idx_date] if len(r) > idx_date else "",
+            "LAST_UPDATED_DATE": r[header.get("last_updated_date", -1)] if "last_updated_date" in header else "",
         })
         if len(out) >= limit:
             break
@@ -372,6 +374,7 @@ def list_pending(
             "STATUS_DO": status,
             "JENIS_ORDER": r[idx_jenis] if len(r) > idx_jenis else "",
             "ORDER_DATE": r[idx_date] if len(r) > idx_date else "",
+            "LAST_UPDATED_DATE": r[header.get("last_updated_date", -1)] if "last_updated_date" in header else "",
         })
         if len(out) >= limit:
             break
